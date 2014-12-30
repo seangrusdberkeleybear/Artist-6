@@ -1,0 +1,150 @@
+//
+//  RGService.h
+//  RevolutionGolf
+//
+//  Created by Zhuk Evgen on 3/6/12.
+//  Copyright (c) 2012 __MyCompanyName__. All rights reserved.
+//
+
+#import <Foundation/Foundation.h>
+#import "RequestManager.h"
+
+#define DEFAULT_PAGINATION_LIMIT 20
+#define TESTING_SERVER 0
+
+typedef enum
+{
+	PFServiceOrderLevel = 0,
+	PFServiceOrderName = 1,
+	PFServiceOrderNationality = 2
+}PFServiceOrder;
+
+@interface PFService : NSObject
+
+@property (assign, nonatomic) NSTimeInterval timeOffset;
+@property (strong, nonatomic) NSString *urlStr;
+
++ (PFService*)sharedManeger;
+
+//Cache Methods
+//---------------------------------------------------------------------------------------------------------------------------------
+- (void)addToCacheItem:(id)item withKey:(NSString*)key;
+- (id)getItemFromCache:(NSString*)key;
+//---------------------------------------------------------------------------------------------------------------------------------
+
+//Notification Alert
+//---------------------------------------------------------------------------------------------------------------------------------
++ (void)showAlertWithHeader:(NSString*)header andMessage:(NSString*)message;
++ (void)showAlertWithConnectionError;
+//---------------------------------------------------------------------------------------------------------------------------------
+
+//Helping functions
+//---------------------------------------------------------------------------------------------------------------------------------
++ (NSString*)getTimeAgo:(NSTimeInterval)uTime;
+//---------------------------------------------------------------------------------------------------------------------------------
+
+
+//Purchase
+//---------------------------------------------------------------------------------------------------------------------------------
+- (void)purchaseApproval:(NSString*)type_cost cost:(int)cost withCompletationHandler:(RMResult)handler;
+//---------------------------------------------------------------------------------------------------------------------------------
+
+//Image
+//---------------------------------------------------------------------------------------------------------------------------------
+- (void)loadImageFromurl:(NSURL*)url withCompletationHandler:(RMResult)handler;
+//---------------------------------------------------------------------------------------------------------------------------------
+
+//Login/Registration
+//---------------------------------------------------------------------------------------------------------------------------------
+- (void)loginWithPfUserName:(NSString*)username pfPassword:(NSString*)password pfRemember:(int)remember withCompletationHandler:(RMResult)handler;
+- (int)logout;
+- (void)registerWithPfUsername:(NSString*)username pfEmail:(NSString*)email pfPassword:(NSString*)password pfConfirmPassword:(NSString*)confirmPassword withCompletationHandler:(RMResult)handler;
+- (void)checkFieldsWithPfUsername:(NSString*)username pfEmail:(NSString*)email pfPassword:(NSString*)password pfConfirmPassword:(NSString*)confirmPassword withCompletationHandler:(RMResult)handler;
+- (void)forgotPasswordWithEmail:(NSString *)email withCompletationHandler:(RMResult)handler;
+//---------------------------------------------------------------------------------------------------------------------------------
+
+//Player
+//---------------------------------------------------------------------------------------------------------------------------------
+- (NSData*)getPlayerImageData:(UIImage *)image;
+- (void)addPlayerWithPfUserID:(int)userID pfTeamID:(int)teamID pfName:(NSString*)name pfPosition_id:(int)position_id pfNationality_id:(int)nationality_id pfPhoto:(UIImage*)photo withCompletationHandler:(RMResult)handler;
+- (void)editPlayerProfileWithName:(NSString*)player_name nationality:(int)nat_id avatar:(UIImage*)avatar withCompletation:(RMResult)handler;
+- (NSDictionary*)getPlayerInfo;
+- (NSDictionary*)getPlayerInfoForPlayerID:(int)player_id;
+- (int)changeTeam:(int)team_id;
+- (void)getWagesInfoWithCompletationHandler:(RMResult)handler;
+- (void)getEnergyUpdateTimeWithCompletationHandler:(RMResult)handler;
+//---------------------------------------------------------------------------------------------------------------------------------
+
+//Following
+//---------------------------------------------------------------------------------------------------------------------------------
+- (void)getDailywithCompletaitionHandler:(RMResult)handler;
+//---------------------------------------------------------------------------------------------------------------------------------
+
+
+//Following
+//---------------------------------------------------------------------------------------------------------------------------------
+- (BOOL)followPlayerWithId:(int)playerID action:(BOOL)isStart;
+- (NSArray*)getFoollow:(BOOL)isFollowing page:(NSRange)page;
+- (NSArray*)getFoollowersByPlayerId:(int)player_id page:(NSRange)page withCompletaitionHandler:(RMResult)handler;
+
+- (void)postStatus:(NSString*)status withCompletaitionHandler:(RMResult)handler;
+- (NSArray*)getFeed:(NSRange)page;
+- (NSArray*)getMyFeed:(NSRange)page;
+- (void)getLastPostByPlayerId:(int)player_id withCompletationHandler:(RMResult)handler;
+//---------------------------------------------------------------------------------------------------------------------------------
+
+//Nationality / Divisions
+//---------------------------------------------------------------------------------------------------------------------------------
+- (NSDictionary*)getNationalities;
+//---------------------------------------------------------------------------------------------------------------------------------
+
+// Divisions
+//---------------------------------------------------------------------------------------------------------------------------------
+- (NSArray*)getDivisionsForPlayerLevel:(int)pLevel;
+- (NSDictionary*)getPlayersInTeamWithId:(int)team_id page:(int)page;
+- (NSDictionary*)getPlayersInTeamWithId:(int)team_id andUsername:(NSString*)username;
+- (NSArray*)getStatisticsForDivisionWithId:(int)division_id;
+//---------------------------------------------------------------------------------------------------------------------------------
+
+// MyWorld
+//---------------------------------------------------------------------------------------------------------------------------------
+//Training
+//---------------------------------------------------------------------------------------------------------------------------------
+- (void)getTrainingForPlace:(BOOL)isGym withCompletaitionHandler:(RMResult)handler;
+- (void)trainingPlayer:(int)player_id withCompletaitionHandler:(RMResult)handler;
+//---------------------------------------------------------------------------------------------------------------------------------
+
+//Shoping
+//---------------------------------------------------------------------------------------------------------------------------------
+- (void)getItemsByType:(NSString*)type withCompletaitionHandler:(RMResult)handler;
+- (void)buyItemWithId:(int)item_id withCompletaitionHandler:(RMResult)handler;
+- (void)getMyStuffByType:(NSString*)type withCompletaitionHandler:(RMResult)handler;
+- (void)getMyStuffByType:(NSString*)type withPlayerId:(int)player_id withCompletaitionHandler:(RMResult)handler;
+//---------------------------------------------------------------------------------------------------------------------------------
+
+//Places
+//---------------------------------------------------------------------------------------------------------------------------------
+- (void)getItemsForPlace:(NSString*)place withCompletaitionHandler:(RMResult)handler;
+- (void)buyItem:(int)player_id withCompletaitionHandler:(RMResult)handler;
+//---------------------------------------------------------------------------------------------------------------------------------
+
+//PvP
+//---------------------------------------------------------------------------------------------------------------------------------
+- (void)getOpponentsWithCompletaitionHandler:(RMResult)handler;
+- (void)getMySquadWithCompletaitionHandler:(RMResult)handler;
+- (void)setPlayer:(int)player_id from:(BOOL)isReal to:(NSString*)position withCompletaitionHandler:(RMResult)handler;
+- (void)getGameContacts:(NSArray*)players_id position:(int)position offset:(int)offset orderBy:(int)order sortOrientation:(BOOL)isAsc withCompletaitionHandler:(RMResult)handler;
+- (void)getRealPlayers:(NSArray*)players_id position:(PFServiceOrder)position offset:(int)offset orderBy:(int)order sortOrientation:(BOOL)isAsc withCompletaitionHandler:(RMResult)handler;
+- (void)startChallengeWithPlayer:(int)player_id withCompletaitionHandler:(RMResult)handler;
+//---------------------------------------------------------------------------------------------------------------------------------
+@end
+
+@interface NSArray (PFCategory)
+//Get Divisions/Teams
+//---------------------------------------------------------------------------------------------------------------------------------
+- (NSArray*)getAllDivisions;
+- (NSArray*)getAllTeamsForDivisionByName:(NSString*)name;
+- (NSArray*)getAllTeamsForDivision:(int)div_id;
+- (NSArray*)getAllTeamsForDivision:(int)div_id forPlayerLevel:(int)level;
+//---------------------------------------------------------------------------------------------------------------------------------
+@end

@@ -1,0 +1,1541 @@
+//
+//  RGService.m
+//  RevolutionGolf
+//
+//  Created by Zhuk Evgen on 3/6/12.
+//  Copyright (c) 2012 __MyCompanyName__. All rights reserved.
+//
+
+#import "PFService.h"
+#import "JSONKit.h"
+
+
+@implementation NSArray (PFCategory)
+//Get Divisions/Teams
+//---------------------------------------------------------------------------------------------------------------------------------
+- (NSArray*)getAllDivisions
+{
+	NSMutableArray *arr = [NSMutableArray arrayWithCapacity:[self count]];
+	
+	for(NSDictionary *dct in self)
+		[arr addObject:[dct objectForKey:@"name"]];
+	return arr;	
+}
+
+- (NSArray*)getAllTeamsForDivision:(int)div_id
+{
+	for(NSDictionary *dct in self)
+		if([[dct objectForKey:@"id"] intValue] == div_id)
+			return [dct objectForKey:@"teams"];
+	return nil;
+}
+
+- (NSArray*)getAllTeamsForDivisionByName:(NSString*)name
+{
+	for(NSDictionary *dct in self)
+		if([[dct objectForKey:@"name"] isEqualToString:name])
+			return [dct objectForKey:@"teams"];
+	return nil;
+}
+
+- (NSArray*)getAllTeamsForDivision:(int)div_id forPlayerLevel:(int)level
+{
+	NSArray *arr = [self getAllTeamsForDivision:div_id];
+	NSMutableArray *resArray = [NSMutableArray array];
+	float stars = 0.0f;
+
+	if(level < 55)
+		stars = 1.0;
+	else if(level < 60)
+		stars = 1.5;
+	else if(level < 65)
+		stars = 2.0;
+	else if(level < 70)
+		stars = 2.5;
+	else if(level < 75)
+		stars = 3.0;
+	else if(level < 80)
+		stars = 3.5;
+	else if(level < 85)
+		stars = 4.0;
+	else if(level < 90)
+		stars = 4.5;
+	else
+		stars = 5.0;
+	
+	for(NSDictionary *dct in arr)
+		if([[dct objectForKey:@"stars_rating"] floatValue] <= stars)
+			[resArray addObject:dct];
+	return resArray;
+}
+//---------------------------------------------------------------------------------------------------------------------------------
+
+@end
+
+@implementation PFService
+
+@synthesize timeOffset = _timeOffset;
+@synthesize urlStr;
+
+//---------------------------------------------------------------------------------------------------------------------------------
++ (PFService*)sharedManeger
+{
+	__strong static PFService*	_sharedManager = nil;
+	
+	static dispatch_once_t onceToken;
+	dispatch_once(&onceToken, ^{
+		_sharedManager = [[PFService alloc]init];
+
+#if TESTING_SERVER
+		_sharedManager.urlStr = @"http://it-dimension.ath.cx:2080/api/m";
+#else
+		_sharedManager.urlStr = @"http://www.profootballergame.com/sc-app/api/m";
+#endif
+
+	});	
+	
+	return _sharedManager;
+}
+//---------------------------------------------------------------------------------------------------------------------------------
+
+#pragma mark - System functions
+//---------------------------------------------------------------------------------------------------------------------------------
+- (void)loadImageFromurl:(NSURL*)url withCompletationHandler:(RMResult)handler
+{	
+	NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:url
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+//    [req setHTTPMethod:@"POST"];
+	
+	[self sendHiddenRequest:req withCompletionHandler:handler];
+}
+//---------------------------------------------------------------------------------------------------------------------------------
+
+#pragma mark - Cache Methods
+//---------------------------------------------------------------------------------------------------------------------------------
+
+- (void)addToCacheItem:(id)item withKey:(NSString*)key
+{
+	NSMutableData *data = nil;
+	if([item isKindOfClass:[UIImage class]])
+		data = [[NSMutableData alloc] initWithData:UIImagePNGRepresentation(item)];
+	
+	if(data)
+	{
+		[data writeToFile:key atomically:YES];
+		//NSLog(@"Add Data to Cache : %@", key);
+	}
+}
+
+- (id)getItemFromCache:(NSString*)key
+{
+//	//NSLog(@"Get Data from Cache : %@", key);
+	NSData *data = [NSData dataWithContentsOfFile:key];
+	return data;
+}
+
+//---------------------------------------------------------------------------------------------------------------------------------
+
+#pragma mark - Notification Alert
+//---------------------------------------------------------------------------------------------------------------------------------
+
++ (void)showAlertWithConnectionError
+{
+	UIAlertView *alrt = [[UIAlertView alloc] initWithTitle:@"Connection error"
+												   message:@"Could not connect to server"
+												  delegate:nil
+										 cancelButtonTitle:@"OK"
+										 otherButtonTitles: nil];
+	[alrt show];
+}
+
++ (void)showAlertWithHeader:(NSString*)header andMessage:(NSString*)message
+{
+	UIAlertView *alrt = [[UIAlertView alloc] initWithTitle:header
+												   message:message
+												  delegate:nil
+										 cancelButtonTitle:@"OK"
+										 otherButtonTitles: nil];
+	[alrt show];
+}
+
+//---------------------------------------------------------------------------------------------------------------------------------
+
+#pragma mark - Helping functions
+//---------------------------------------------------------------------------------------------------------------------------------
++ (NSString*)getTimeAgo:(NSTimeInterval)uTime
+{
+	unsigned int unitFlags = NSMonthCalendarUnit | NSDayCalendarUnit | NSHourCalendarUnit | NSMinuteCalendarUnit | NSSecondCalendarUnit;
+	
+	uTime += [PFService sharedManeger].timeOffset;
+	
+	NSDateComponents *comps = [[NSCalendar currentCalendar] components:unitFlags fromDate:[NSDate dateWithTimeIntervalSince1970:uTime]  toDate:[NSDate date]  options:0];
+	
+	NSMutableString *res = [[NSMutableString alloc]init];
+	
+	if([comps month] > 0)
+		[res appendFormat:@"%d month", [comps month]];
+	else if([comps day] > 0)
+		[res appendFormat:@"%d days", [comps day]];
+	else if([comps hour] > 0)
+		[res appendFormat:@"%d hours", [comps hour]];
+	else if([comps minute] > 0)
+		[res appendFormat:@"%d mins", [comps minute]];
+	else if([comps second] > 0)
+		[res appendFormat:@"%d sec", [comps second]];
+	
+	[res appendString:@" ago"];
+	
+	return res;
+}
+//---------------------------------------------------------------------------------------------------------------------------------
+
+#pragma mark - PURCHASES
+
+//Login
+//---------------------------------------------------------------------------------------------------------------------------------
+- (void)purchaseApproval:(NSString*)type_cost cost:(int)cost withCompletationHandler:(RMResult)handler
+{
+	
+	NSString *url = nil;
+	
+	if(!TESTING_SERVER)
+		url = @"https://www.profootballergame.com/sc-app/api/m";
+	else
+		url = @"";
+	
+	NSString *api_path = [NSString stringWithFormat:@"%@/balance", url];
+	
+	NSString *postBody = [NSString stringWithFormat:@"type=%@&cost=%d", type_cost, cost];
+	
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+    NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+    //NSLog(@"%@?%@", api_path, postBody);
+	
+    [self sendHiddenRequest:req withCompletionHandler:handler];
+
+}
+//---------------------------------------------------------------------------------------------------------------------------------
+
+#pragma mark - Login/Registration
+
+//Login
+//---------------------------------------------------------------------------------------------------------------------------------
+- (void)loginWithPfUserName:(NSString*)username pfPassword:(NSString*)password pfRemember:(int)remember withCompletationHandler:(RMResult)handler
+{	
+	NSString *api_path = [NSString stringWithFormat:@"%@/login", urlStr];
+	
+	NSString *postBody = [NSString stringWithFormat:@"username=%@&password=%@&remember=%d&token=%@", username, password, remember, [[AppDelegate currentDelegate] deviceToken]];
+	
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+    NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+    NSLog(@"%@?%@", api_path, postBody);
+    [self sendHiddenRequest:req withCompletionHandler:handler];
+}
+
+- (void)forgotPasswordWithEmail:(NSString *)email withCompletationHandler:(RMResult)handler
+{
+    NSString *api_path = [NSString stringWithFormat:@"%@/forgot", urlStr];
+    NSString *post_body = [NSString stringWithFormat:@"email=%@", email];
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+    NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+                                                            cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPBody:[post_body dataUsingEncoding:NSUTF8StringEncoding]];
+    [req setHTTPMethod:@"POST"];
+    [self sendHiddenRequest:req withCompletionHandler:handler];
+}
+
+//Logout
+//---------------------------------------------------------------------------------------------------------------------------------
+- (int)logout
+{	
+	NSString *api_path = [NSString stringWithFormat:@"%@/logout", urlStr];
+	
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+    NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+    NSLog(@"%@", api_path);
+	
+    NSDictionary *dict = [[self sendSyncRequest:req] objectFromJSONData];
+	
+	if([dict isKindOfClass:[NSError class]])
+	{
+		UIAlertView *alrt = [[UIAlertView alloc] initWithTitle:@"Connection error"
+													   message:@"Could not connect to server"
+													  delegate:nil
+											 cancelButtonTitle:@"OK"
+											 otherButtonTitles: nil];
+		[alrt show];
+		//NSLog(@"FAIL: %@", dict);
+		return -1;
+	}
+	else
+	{
+		return 1;
+	}
+	
+	return -1;
+}
+//---------------------------------------------------------------------------------------------------------------------------------
+
+//Registration
+//---------------------------------------------------------------------------------------------------------------------------------
+- (void)registerWithPfUsername:(NSString*)username pfEmail:(NSString*)email pfPassword:(NSString*)password pfConfirmPassword:(NSString*)confirmPassword withCompletationHandler:(RMResult)handler
+{	
+	NSString *api_path = [NSString stringWithFormat:@"%@/add_user", urlStr];
+  
+	NSString *postBody = [NSString stringWithFormat:@"username=%@&email=%@&password=%@&password_confirm=%@", username, email, password, confirmPassword];
+	
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+    NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+                                                            cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+    [self sendHiddenRequest:req withCompletionHandler:handler];
+}
+
+- (void)checkFieldsWithPfUsername:(NSString*)username pfEmail:(NSString*)email pfPassword:(NSString*)password pfConfirmPassword:(NSString*)confirmPassword withCompletationHandler:(RMResult)handler
+{	
+	NSString *api_path = [NSString stringWithFormat:@"%@/check_user", urlStr];
+    
+	NSString *postBody = [NSString stringWithFormat:@"username=%@&email=%@&password=%@&password_confirm=%@", username, email, password, confirmPassword];
+	
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+    NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+                                                            cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+    [self sendRequest:req withCompletionHandler:handler];
+}
+//---------------------------------------------------------------------------------------------------------------------------------
+
+#pragma mark - Player
+//---------------------------------------------------------------------------------------------------------------------------------
+- (void)addPlayerWithPfUserID:(int)userID
+					pfTeamID:(int)teamID
+					  pfName:(NSString*)name
+			   pfPosition_id:(int)position_id
+			pfNationality_id:(int)nationality_id
+					 pfPhoto:(UIImage*)photo
+      withCompletationHandler:(RMResult)handler
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/add_player", urlStr];
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+	NSString *boundary = @"0xKhTmLbOuNdArY";  
+	
+	NSMutableData *body = [NSMutableData data];
+	[body appendData:[[NSString stringWithFormat:@"\r\n--%@\r\n", boundary] dataUsingEncoding:NSUTF8StringEncoding]];
+	[body appendData:[@"Content-Disposition: form-data; name=\"user_id\"\r\n\r\n" dataUsingEncoding:NSUTF8StringEncoding]];
+	[body appendData:[[NSString stringWithFormat:@"%d", userID] dataUsingEncoding:NSUTF8StringEncoding]];
+	[body appendData:[[NSString stringWithFormat:@"\r\n--%@\r\n", boundary] dataUsingEncoding:NSUTF8StringEncoding]];
+	[body appendData:[@"Content-Disposition: form-data; name=\"team_id\"\r\n\r\n" dataUsingEncoding:NSUTF8StringEncoding]];
+	[body appendData:[[NSString stringWithFormat:@"%d", teamID] dataUsingEncoding:NSUTF8StringEncoding]];
+	[body appendData:[[NSString stringWithFormat:@"\r\n--%@\r\n", boundary] dataUsingEncoding:NSUTF8StringEncoding]];
+	[body appendData:[@"Content-Disposition: form-data; name=\"name\"\r\n\r\n" dataUsingEncoding:NSUTF8StringEncoding]];
+	[body appendData:[[NSString stringWithFormat:@"%@", name] dataUsingEncoding:NSUTF8StringEncoding]];
+	[body appendData:[[NSString stringWithFormat:@"\r\n--%@\r\n", boundary] dataUsingEncoding:NSUTF8StringEncoding]];
+	[body appendData:[@"Content-Disposition: form-data; name=\"position_id\"\r\n\r\n" dataUsingEncoding:NSUTF8StringEncoding]];
+	[body appendData:[[NSString stringWithFormat:@"%d", position_id] dataUsingEncoding:NSUTF8StringEncoding]];
+	[body appendData:[[NSString stringWithFormat:@"\r\n--%@\r\n", boundary] dataUsingEncoding:NSUTF8StringEncoding]];
+	[body appendData:[@"Content-Disposition: form-data; name=\"nationality_id\"\r\n\r\n" dataUsingEncoding:NSUTF8StringEncoding]];
+	[body appendData:[[NSString stringWithFormat:@"%d", nationality_id] dataUsingEncoding:NSUTF8StringEncoding]];
+	[body appendData:[[NSString stringWithFormat:@"\r\n--%@\r\n", boundary] dataUsingEncoding:NSUTF8StringEncoding]];
+	[body appendData:[[NSString stringWithFormat:@"Content-Disposition:attachment; name=\"photo\"; filename=\"%@.jpg\"\r\n", name] dataUsingEncoding:NSUTF8StringEncoding]];
+	[body appendData:[@"Content-Type: application/octet-stream\r\n\r\n" dataUsingEncoding:NSUTF8StringEncoding]];
+	[body appendData:[self getPlayerImageData:photo]];
+	[body appendData:[[NSString stringWithFormat:@"\r\n--%@\r\n", boundary] dataUsingEncoding:NSUTF8StringEncoding]];
+	
+    NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+	[req setHTTPMethod:@"POST"];
+	NSString *contentType = [NSString stringWithFormat:@"multipart/form-data; boundary=%@", boundary];
+	[req addValue:contentType forHTTPHeaderField:@"Content-Type"];
+	[req setHTTPBody:body];
+    
+	[self sendHiddenRequest:req withCompletionHandler:handler];
+}
+
+- (void)editPlayerProfileWithName:(NSString*)player_name nationality:(int)nat_id avatar:(UIImage*)avatar withCompletation:(RMResult)handler
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/update_player", urlStr];
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+	NSString *boundary = @"0xKhTmLbOuNdArY248937489728397";  
+	
+	NSMutableData *body = [NSMutableData data];
+	[body appendData:[[NSString stringWithFormat:@"\r\n--%@\r\n", boundary] dataUsingEncoding:NSUTF8StringEncoding]];
+	[body appendData:[@"Content-Disposition: form-data; name=\"name\"\r\n\r\n" dataUsingEncoding:NSUTF8StringEncoding]];
+	[body appendData:[[NSString stringWithFormat:@"%@", player_name] dataUsingEncoding:NSUTF8StringEncoding]];
+	[body appendData:[[NSString stringWithFormat:@"\r\n--%@\r\n", boundary] dataUsingEncoding:NSUTF8StringEncoding]];
+	[body appendData:[@"Content-Disposition: form-data; name=\"nationality_id\"\r\n\r\n" dataUsingEncoding:NSUTF8StringEncoding]];
+	[body appendData:[[NSString stringWithFormat:@"%d", nat_id] dataUsingEncoding:NSUTF8StringEncoding]];
+	[body appendData:[[NSString stringWithFormat:@"\r\n--%@\r\n", boundary] dataUsingEncoding:NSUTF8StringEncoding]];
+	[body appendData:[[NSString stringWithFormat:@"Content-Disposition:attachment; name=\"photo\"; filename=\"%@.jpg\"\r\n", player_name] dataUsingEncoding:NSUTF8StringEncoding]];
+	[body appendData:[@"Content-Type: application/octet-stream\r\n\r\n" dataUsingEncoding:NSUTF8StringEncoding]];
+	[body appendData:[self getPlayerImageData:avatar]];
+	[body appendData:[[NSString stringWithFormat:@"\r\n--%@\r\n", boundary] dataUsingEncoding:NSUTF8StringEncoding]];
+	
+    NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+	[req setHTTPMethod:@"POST"];
+	NSString *contentType = [NSString stringWithFormat:@"multipart/form-data; boundary=%@", boundary];
+	[req addValue:contentType forHTTPHeaderField:@"Content-Type"];
+	[req setHTTPBody:body];
+	
+	//NSLog(@"%@\n%@", api_path, [[NSString alloc] initWithData:body encoding:NSASCIIStringEncoding]);
+	
+    [self sendRequest:req withCompletionHandler:handler];
+}
+
+- (NSDictionary*)getPlayerInfo
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/player_info", urlStr];
+
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+//	NSString *postBody = [NSString stringWithFormat:@"player_id=%d", 15];
+    NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+//	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+    //NSLog(@"%@", api_path);
+	
+	NSData *resp = [self sendSyncRequest:req];
+    NSDictionary *dict = [resp objectFromJSONData]; 
+	
+	if(dict)
+	{
+		if([dict isKindOfClass:[NSError class]])
+		{
+			UIAlertView *alrt = [[UIAlertView alloc] initWithTitle:@"Connection error"
+														   message:@"Could not connect to server"
+														  delegate:nil
+												 cancelButtonTitle:@"OK"
+												 otherButtonTitles: nil];
+			[alrt show];
+			//NSLog(@"FAIL: %@", dict);
+			return nil;
+		}
+		else
+		{
+			if([[dict objectForKey:@"error"] intValue] == 0)
+			{
+				NSDictionary *info = [dict objectForKey:@"data"];
+//				//NSLog(@"%@", info);
+				if([info objectForKey:@"balance"] && [[info objectForKey:@"balance"] intValue] >= 50000)
+				{
+					[[AppDelegate currentDelegate] postAchievmentWithID:kAchievement19];
+				}
+				return info;
+			}
+			else
+			{
+				UIAlertView *alrt = [[UIAlertView alloc] initWithTitle:@"Registration error"
+															   message:[dict objectForKey:@"error"]
+															  delegate:nil
+													 cancelButtonTitle:@"OK"
+													 otherButtonTitles: nil];
+				[alrt show];
+				return nil;
+			}
+		}
+    }
+	
+	return nil;
+}
+
+- (NSDictionary*)getPlayerInfoForPlayerID:(int)player_id
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/player_info", urlStr];
+	
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	NSString *postBody = [NSString stringWithFormat:@"player_id=%d", player_id];
+    NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+    //NSLog(@"%@", api_path);
+	
+    NSDictionary *dict = [[self sendSyncRequest:req] objectFromJSONData]; 
+	
+	if(dict)
+	{
+		if([dict isKindOfClass:[NSError class]])
+		{
+			UIAlertView *alrt = [[UIAlertView alloc] initWithTitle:@"Connection error"
+														   message:@"Could not connect to server"
+														  delegate:nil
+												 cancelButtonTitle:@"OK"
+												 otherButtonTitles: nil];
+			[alrt show];
+			//NSLog(@"FAIL: %@", dict);
+			return nil;
+		}
+		else
+		{
+			if([[dict objectForKey:@"error"] intValue] == 0)
+				return [dict objectForKey:@"data"];
+			else
+			{
+				NSString *description = @"";
+				
+				for(NSString *value in [[dict objectForKey:@"error"] allValues])
+				{
+					description = [description stringByAppendingFormat:@"%@.\n", value];
+				}
+				
+				UIAlertView *alrt = [[UIAlertView alloc] initWithTitle:@"Registration error"
+															   message:description
+															  delegate:nil
+													 cancelButtonTitle:@"OK"
+													 otherButtonTitles: nil];
+				[alrt show];
+				return nil;
+			}
+		}
+    }
+	
+	return nil;
+}
+
+- (NSData*)getPlayerImageData:(UIImage *)image
+{
+	if(image)
+	{
+        CGFloat width = image.size.width;
+        CGFloat height = image.size.height; 
+        CGFloat scale = (100)/width;
+        
+        width *= scale;
+        height *= scale;
+		
+        UIImage *newImage = nil;
+        UIGraphicsBeginImageContext(CGSizeMake(width, height));
+        [image drawInRect:CGRectMake(0, 0, width, height)];
+        newImage =  UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+        
+		NSData *resData = UIImagePNGRepresentation(newImage);
+		
+        //NSLog(@"Set user image");
+        //NSLog(@"Old Size: %d -> New Size: %d", [UIImagePNGRepresentation(image) length], [resData length]);
+		
+		return resData;
+	}
+	
+	return nil;
+}
+
+- (int)changeTeam:(int)team_id 
+{	
+	NSString *api_path = [NSString stringWithFormat:@"%@/change_team", urlStr];
+	
+	NSString *postBody = [NSString stringWithFormat:@"team_id=%d", team_id];
+	
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+    NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+    //NSLog(@"%@?%@", api_path, postBody);
+    NSDictionary *dict = [[self sendSyncRequest:req] objectFromJSONData];
+	
+	if(dict)
+	{
+		if([dict isKindOfClass:[NSError class]])
+		{
+			UIAlertView *alrt = [[UIAlertView alloc] initWithTitle:@"Connection error"
+														   message:@"Could not connect to server"
+														  delegate:nil
+												 cancelButtonTitle:@"OK"
+												 otherButtonTitles: nil];
+			[alrt show];
+			//NSLog(@"FAIL: %@", dict);
+			return -1;
+		}
+		else
+		{
+//			//NSLog(@"%@", dict);
+			if([[dict objectForKey:@"data"] intValue] > 0)
+				return [[dict objectForKey:@"data"] intValue];
+			else
+			{				
+				UIAlertView *alrt = [[UIAlertView alloc] initWithTitle:@"Server error"
+															   message:[dict objectForKey:@"error"]
+															  delegate:nil
+													 cancelButtonTitle:@"OK"
+													 otherButtonTitles: nil];
+				[alrt show];
+				return -1;
+			}
+		}
+    }
+	
+	return -1;
+}
+
+- (void)getWagesInfoWithCompletationHandler:(RMResult)handler
+{	
+	NSString *api_path = [NSString stringWithFormat:@"%@/wages", urlStr];
+	
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+    NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	
+	//NSLog(@"%@", api_path);
+	
+	[self sendHiddenRequest:req withCompletionHandler:handler];
+
+}
+
+- (void)getEnergyUpdateTimeWithCompletationHandler:(RMResult)handler
+{	
+	NSString *api_path = [NSString stringWithFormat:@"%@/energy", urlStr];
+	
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+    NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	
+	//NSLog(@"%@", api_path);
+	
+	[self sendHiddenRequest:req withCompletionHandler:handler];
+}
+
+//---------------------------------------------------------------------------------------------------------------------------------
+
+#pragma mark - Daily
+//---------------------------------------------------------------------------------------------------------------------------------
+- (void)getDailywithCompletaitionHandler:(RMResult)handler
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/daily", urlStr];
+	
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+    NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	
+	//NSLog(@"%@", api_path);
+	
+	[self sendRequest:req withCompletionHandler:handler];
+}
+
+//---------------------------------------------------------------------------------------------------------------------------------
+
+#pragma mark - Following
+//---------------------------------------------------------------------------------------------------------------------------------
+- (BOOL)followPlayerWithId:(int)playerID action:(BOOL)isStart
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/follow_player", urlStr];
+	
+	NSString *postBody = [NSString stringWithFormat:@"player_id=%d&action=%@", playerID, (isStart)?@"start":@"stop"];
+	
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+    NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+    //NSLog(@"%@?%@", api_path, postBody);
+    NSDictionary *dict = [[self sendSyncRequest:req] objectFromJSONData];
+//	//NSLog(@"%@", dict);
+	if(dict)
+	{
+		if([dict isKindOfClass:[NSError class]])
+		{
+			UIAlertView *alrt = [[UIAlertView alloc] initWithTitle:@"Connection error"
+														   message:@"Could not connect to server"
+														  delegate:nil
+												 cancelButtonTitle:@"OK"
+												 otherButtonTitles: nil];
+			[alrt show];
+			//NSLog(@"FAIL: %@", dict);
+			return NO;
+		}
+		else
+		{
+			//			//NSLog(@"%@", dict);
+			if([[dict objectForKey:@"data"] isKindOfClass:[NSString class]])
+				return YES;
+			else
+			{				
+				UIAlertView *alrt = [[UIAlertView alloc] initWithTitle:@"Server error"
+															   message:[dict objectForKey:@"error"]
+															  delegate:nil
+													 cancelButtonTitle:@"OK"
+													 otherButtonTitles: nil];
+				[alrt show];
+				return NO;
+			}
+		}
+    }
+	
+	return NO;
+
+}
+
+- (NSArray*)getFoollow:(BOOL)isFollowing page:(NSRange)page
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/get_follow", urlStr];
+	
+	NSString *postBody = [NSString stringWithFormat:@"type=%@&offset=%d&limit=%d", (isFollowing)?@"following":@"followers", page.location, page.length];
+	
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+    NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+ 
+	//NSLog(@"%@?%@", api_path, postBody);
+
+    NSDictionary *dict = [[self sendSyncRequest:req] objectFromJSONData];
+	
+//	//NSLog(@"%@", dict);
+	
+	if(dict)
+	{
+		if([dict isKindOfClass:[NSError class]])
+		{
+			UIAlertView *alrt = [[UIAlertView alloc] initWithTitle:@"Connection error"
+														   message:@"Could not connect to server"
+														  delegate:nil
+												 cancelButtonTitle:@"OK"
+												 otherButtonTitles: nil];
+			[alrt show];
+			//NSLog(@"FAIL: %@", dict);
+			return [NSArray array];
+		}
+		else
+		{
+//			//NSLog(@"%@", dict);
+			if([[dict objectForKey:@"data"] isKindOfClass:[NSArray class]])
+			{
+				NSArray *follows = [dict objectForKey:@"data"];
+				
+				if(!isFollowing)
+				{
+					if([follows count] >= 10 && [follows count] < 25)
+					{
+						[[AppDelegate currentDelegate] postAchievmentWithID:kAchievement12];
+					}
+					else if([follows count] >= 25 && [follows count] < 50)
+					{
+						[[AppDelegate currentDelegate] postAchievmentWithID:kAchievement13];
+					}
+					else if([follows count] >= 50 && [follows count] < 100)
+					{
+						[[AppDelegate currentDelegate] postAchievmentWithID:kAchievement14];
+					}
+					else if([follows count] >= 100)
+					{
+						[[AppDelegate currentDelegate] postAchievmentWithID:kAchievement15];
+					}
+				}
+				return follows;
+			}
+			else
+			{				
+				UIAlertView *alrt = [[UIAlertView alloc] initWithTitle:@"Server error"
+															   message:[dict objectForKey:@"error"]
+												
+															  delegate:nil
+													 cancelButtonTitle:@"OK"
+													 otherButtonTitles: nil];
+				[alrt show];
+				return [NSArray array];
+			}
+		}
+    }
+	
+	return [NSArray array];
+}
+
+- (NSArray*)getFoollowersByPlayerId:(int)player_id page:(NSRange)page withCompletaitionHandler:(RMResult)handler
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/get_follow", urlStr];
+	
+	NSString *postBody = [NSString stringWithFormat:@"type=followers&player_id=%d&offset=%d&limit=%d", player_id, page.location, page.length];
+	
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+    NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+	
+	//NSLog(@"%@?%@", api_path, postBody);
+	
+	[self sendRequest:req withCompletionHandler:handler];
+	
+	
+	return [NSArray array];
+}
+
+//---------------------------------------------------------------------------------------------------------------------------------
+
+#pragma mark - Posting
+//---------------------------------------------------------------------------------------------------------------------------------
+- (void)postStatus:(NSString*)status withCompletaitionHandler:(RMResult)handler
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/post_status", urlStr];
+	
+	NSString *postBody = [NSString stringWithFormat:@"message=%@", status];
+	
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+    NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+	
+	[self sendRequest:req withCompletionHandler:handler];
+}
+
+
+- (NSArray*)getFeed:(NSRange)page
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/get_feed", urlStr];
+
+	NSString *postBody = [NSString stringWithFormat:@"offset=%d&limit=%d", page.location, page.length];
+	
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+    NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+
+    //NSLog(@"%@", api_path);
+    
+	NSDictionary *dict = [[self sendSyncRequest:req] objectFromJSONData];
+	if(dict)
+	{
+		if([dict isKindOfClass:[NSError class]])
+		{
+			UIAlertView *alrt = [[UIAlertView alloc] initWithTitle:@"Connection error"
+														   message:@"Could not connect to server"
+														  delegate:nil
+												 cancelButtonTitle:@"OK"
+												 otherButtonTitles: nil];
+			[alrt show];
+			//NSLog(@"FAIL: %@", dict);
+			return [NSArray array];
+		}
+		else
+		{
+//			//NSLog(@"%@", dict);
+			if([[dict objectForKey:@"data"] isKindOfClass:[NSArray class]])
+			{
+				NSTimeInterval deviceTime = [[NSDate date] timeIntervalSince1970];
+				self.timeOffset = deviceTime - [[dict objectForKey:@"time"] doubleValue];
+				//NSLog(@"Time Offset: %f", self.timeOffset);
+				
+				return [dict objectForKey:@"data"];
+			}
+			else
+			{				
+				UIAlertView *alrt = [[UIAlertView alloc] initWithTitle:@"Server error"
+															   message:[dict objectForKey:@"error"]
+															  delegate:nil
+													 cancelButtonTitle:@"OK"
+													 otherButtonTitles: nil];
+				[alrt show];
+				return [NSArray array];
+			}
+		}
+    }
+	
+	return [NSArray array];
+}
+
+- (NSArray*)getMyFeed:(NSRange)page
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/get_feed", urlStr];
+	
+	NSString *postBody = [NSString stringWithFormat:@"my=1&offset=%d&limit=%d", page.location, page.length];
+	
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+    NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+    //NSLog(@"%@?%@", api_path, postBody);
+    NSDictionary *dict = [[self sendSyncRequest:req] objectFromJSONData];
+	if(dict)
+	{
+		if([dict isKindOfClass:[NSError class]])
+		{
+			UIAlertView *alrt = [[UIAlertView alloc] initWithTitle:@"Connection error"
+														   message:@"Could not connect to server"
+														  delegate:nil
+												 cancelButtonTitle:@"OK"
+												 otherButtonTitles: nil];
+			[alrt show];
+			//NSLog(@"FAIL: %@", dict);
+			return [NSArray array];
+		}
+		else
+		{
+			if([[dict objectForKey:@"data"] isKindOfClass:[NSArray class]])
+			{
+				NSTimeInterval deviceTime = [[NSDate date] timeIntervalSince1970];
+				self.timeOffset = deviceTime - [[dict objectForKey:@"time"] doubleValue];
+				//NSLog(@"Time Offset: %f", self.timeOffset);
+				//NSLog(@"%@", dict);
+				return [dict objectForKey:@"data"];
+			}
+			else
+			{				
+				UIAlertView *alrt = [[UIAlertView alloc] initWithTitle:@"Server error"
+															   message:[dict objectForKey:@"error"]
+															  delegate:nil
+													 cancelButtonTitle:@"OK"
+													 otherButtonTitles: nil];
+				[alrt show];
+				return [NSArray array];
+			}
+		}
+    }
+	
+	return [NSArray array];
+}
+
+- (void)getLastPostByPlayerId:(int)player_id withCompletationHandler:(RMResult)handler
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/get_last_post", urlStr];
+	
+	NSString *postBody = [NSString stringWithFormat:@"player_id=%d", player_id];
+	
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+    NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+    //NSLog(@"%@?%@", api_path, postBody);
+    [self sendRequest:req withCompletionHandler:handler];
+}
+
+//---------------------------------------------------------------------------------------------------------------------------------
+
+
+#pragma mark - Nationality
+//---------------------------------------------------------------------------------------------------------------------------------
+- (NSDictionary*)getNationalities
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/nationalities", urlStr];
+	
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+    NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+    //NSLog(@"%@", api_path);
+
+    NSDictionary *dict = [[self sendSyncRequest:req] objectFromJSONData]; 
+	
+	if(dict)
+	{
+		if([dict isKindOfClass:[NSError class]])
+		{
+			UIAlertView *alrt = [[UIAlertView alloc] initWithTitle:@"Connection error"
+														   message:@"Could not connect to server"
+														  delegate:nil
+												 cancelButtonTitle:@"OK"
+												 otherButtonTitles: nil];
+			[alrt show];
+			//NSLog(@"FAIL: %@", dict);
+			return nil;
+		}
+		else
+		{
+//			//NSLog(@"%@", dict);
+			if([[dict objectForKey:@"error"] intValue] == 0)
+				return [dict objectForKey:@"data"];
+			else
+			{
+				NSString *description = @"";
+				
+				for(NSString *value in [[dict objectForKey:@"error"] allValues])
+				{
+					description = [description stringByAppendingFormat:@"%@.\n", value];
+				}
+				
+				UIAlertView *alrt = [[UIAlertView alloc] initWithTitle:@"Registration error"
+															   message:description
+															  delegate:nil
+													 cancelButtonTitle:@"OK"
+													 otherButtonTitles: nil];
+				[alrt show];
+				return nil;
+			}
+		}
+    }
+	
+	return nil;
+}
+//---------------------------------------------------------------------------------------------------------------------------------
+
+#pragma mark - Divisions
+//---------------------------------------------------------------------------------------------------------------------------------
+- (NSArray*)getDivisionsForPlayerLevel:(int)pLevel
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/divisions", urlStr];
+	
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	NSString *postBody = [NSString stringWithFormat:@"player_level=%d", pLevel];
+	
+    NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+    //NSLog(@"%@?%@", api_path, postBody);
+
+    NSDictionary *dict = [[self sendSyncRequest:req] objectFromJSONData];
+	
+	if(dict)
+	{
+		if([dict isKindOfClass:[NSError class]])
+		{
+			UIAlertView *alrt = [[UIAlertView alloc] initWithTitle:@"Connection error"
+														   message:@"Could not connect to server"
+														  delegate:nil
+												 cancelButtonTitle:@"OK"
+												 otherButtonTitles: nil];
+			[alrt show];
+			//NSLog(@"FAIL: %@", dict);
+			return nil;
+		}
+		else
+		{
+//			//NSLog(@"%@", dict);
+			if([[dict objectForKey:@"error"] intValue] == 0)
+				return [dict objectForKey:@"data"];
+			else
+			{
+				NSString *description = @"";
+				
+				for(NSString *value in [[dict objectForKey:@"error"] allValues])
+				{
+					description = [description stringByAppendingFormat:@"%@.\n", value];
+				}
+				
+				UIAlertView *alrt = [[UIAlertView alloc] initWithTitle:@"Registration error"
+															   message:description
+															  delegate:nil
+													 cancelButtonTitle:@"OK"
+													 otherButtonTitles: nil];
+				[alrt show];
+				return nil;
+			}
+		}
+    }
+	
+	return nil;
+}
+
+- (NSDictionary*)getPlayersInTeamWithId:(int)team_id page:(int)page
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/get_players", urlStr];
+	
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	NSString *postBody = [NSString stringWithFormat:@"team_id=%d&offset=%d", team_id, page];
+	
+    NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+    //NSLog(@"%@?%@", api_path, postBody);
+	
+    NSDictionary *dict = [[self sendSyncRequest:req] objectFromJSONData];
+	
+	if(dict)
+	{
+		if([dict isKindOfClass:[NSError class]])
+		{
+			UIAlertView *alrt = [[UIAlertView alloc] initWithTitle:@"Connection error"
+														   message:@"Could not connect to server"
+														  delegate:nil
+												 cancelButtonTitle:@"OK"
+												 otherButtonTitles: nil];
+			[alrt show];
+			//NSLog(@"FAIL: %@", dict);
+			return nil;
+		}
+		else
+		{
+			//NSLog(@"%@", dict);
+			if([[dict objectForKey:@"error"] intValue] == 0)
+				return [dict objectForKey:@"data"];
+			else
+			{
+				NSString *description = @"";
+				
+				description = [description stringByAppendingFormat:@"%@.", [dict objectForKey:@"error"]];
+				
+				UIAlertView *alrt = [[UIAlertView alloc] initWithTitle:@"Server error"
+															   message:description
+															  delegate:nil
+													 cancelButtonTitle:@"OK"
+													 otherButtonTitles: nil];
+				[alrt show];
+				return nil;
+			}
+		}
+    }
+	
+	return nil;
+}
+
+- (NSDictionary*)getPlayersInTeamWithId:(int)team_id andUsername:(NSString*)username
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/get_players", urlStr];
+	
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	NSString *postBody = [NSString stringWithFormat:@"team_id=%d&username=%@", team_id, username];
+	
+    NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+    NSLog(@"%@?%@", api_path, postBody);
+	
+    NSDictionary *dict = [[self sendSyncRequest:req] objectFromJSONData];
+	
+	if(dict)
+	{
+		if([dict isKindOfClass:[NSError class]])
+		{
+			UIAlertView *alrt = [[UIAlertView alloc] initWithTitle:@"Connection error"
+														   message:@"Could not connect to server"
+														  delegate:nil
+												 cancelButtonTitle:@"OK"
+												 otherButtonTitles: nil];
+			[alrt show];
+			//NSLog(@"FAIL: %@", dict);
+			return nil;
+		}
+		else
+		{
+			//NSLog(@"%@", dict);
+			if([[dict objectForKey:@"data"] isKindOfClass:[NSDictionary class]])
+				return [dict objectForKey:@"data"];
+			else
+			{
+				UIAlertView *alrt = [[UIAlertView alloc] initWithTitle:@"Server error"
+															   message:[[dict objectForKey:@"data"] objectForKey:@"error"]
+															  delegate:nil
+													 cancelButtonTitle:@"OK"
+													 otherButtonTitles: nil];
+				[alrt show];
+				
+				return nil;
+			}
+		}
+    }
+	
+	return nil;
+}
+
+#pragma mark - Divisions Statistics
+//---------------------------------------------------------------------------------------------------------------------------------
+- (NSArray*)getStatisticsForDivisionWithId:(int)division_id
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/standings_club", urlStr];
+
+	api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	NSString *postBody = [NSString stringWithFormat:@"division_id=%d", division_id];
+
+	NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+														timeoutInterval:30.0];
+	[req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+	//NSLog(@"%@?%@", api_path, postBody);
+
+	NSDictionary *dict = [[self sendSyncRequest:req] objectFromJSONData];
+	if(dict)
+	{
+		if([dict isKindOfClass:[NSError class]])
+		{
+			UIAlertView *alrt = [[UIAlertView alloc] initWithTitle:@"Connection error"
+														   message:@"Could not connect to server"
+														  delegate:nil
+												 cancelButtonTitle:@"OK"
+												 otherButtonTitles: nil];
+			[alrt show];
+			//NSLog(@"FAIL: %@", dict);
+			return nil;
+		}
+		else
+		{
+//			//NSLog(@"%@", dict);
+			if(![[dict objectForKey:@"error"] isKindOfClass:[NSString class]])
+				return [dict objectForKey:@"data"];
+			else
+			{
+				NSString *description = [dict objectForKey:@"error"];
+				
+				UIAlertView *alrt = [[UIAlertView alloc] initWithTitle:@"Registration error"
+															   message:description
+															  delegate:nil
+													 cancelButtonTitle:@"OK"
+													 otherButtonTitles: nil];
+				[alrt show];
+				return nil;
+			}
+		}
+	}
+
+	return nil;
+}
+
+//---------------------------------------------------------------------------------------------------------------------------------
+
+#pragma mark - MyWorld
+#pragma mark - Trainings
+//---------------------------------------------------------------------------------------------------------------------------------
+- (void)getTrainingForPlace:(BOOL)isGym withCompletaitionHandler:(RMResult)handler
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/training_list", urlStr];
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+	NSString *postBody = [NSString stringWithFormat:@"place=%@", (isGym)?@"gym":@"grounds"];
+
+	//NSLog(@"%@?%@", api_path, postBody);
+	
+	NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+	
+	[self sendRequest:req withCompletionHandler:handler];
+}
+
+- (void)trainingPlayer:(int)training_id withCompletaitionHandler:(RMResult)handler
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/training_player", urlStr];
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+	NSString *postBody = [NSString stringWithFormat:@"training_id=%d", training_id];
+	
+	//NSLog(@"%@?%@", api_path, postBody);
+	
+	NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+	
+	[self sendRequest:req withCompletionHandler:handler];
+}
+//---------------------------------------------------------------------------------------------------------------------------------
+
+#pragma mark - Places
+//---------------------------------------------------------------------------------------------------------------------------------
+- (void)getItemsByType:(NSString*)type withCompletaitionHandler:(RMResult)handler
+{	
+	NSString *api_path = [NSString stringWithFormat:@"%@/get_items", urlStr];
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+	NSString *postBody = [NSString stringWithFormat:@"type=%@", type];
+	
+	//NSLog(@"%@?%@", api_path, postBody);
+	
+	NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+	
+	[self sendRequest:req withCompletionHandler:handler];
+
+}
+
+- (void)buyItemWithId:(int)item_id withCompletaitionHandler:(RMResult)handler
+{	
+	NSString *api_path = [NSString stringWithFormat:@"%@/buy_item", urlStr];
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+	NSString *postBody = [NSString stringWithFormat:@"item_id=%d", item_id];
+	
+	//NSLog(@"%@?%@", api_path, postBody);
+	
+	NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+	
+	[self sendRequest:req withCompletionHandler:handler];
+}
+
+- (void)getMyStuffByType:(NSString*)type withCompletaitionHandler:(RMResult)handler
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/get_stuff", urlStr];
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+	NSString *postBody = [NSString stringWithFormat:@"type=%@", type];
+	
+	//NSLog(@"%@?%@", api_path, postBody);
+	
+	NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+	
+	[self sendRequest:req withCompletionHandler:handler];
+}
+//---------------------------------------------------------------------------------------------------------------------------------
+
+//---------------------------------------------------------------------------------------------------------------------------------
+- (void)getMyStuffByType:(NSString*)type withPlayerId:(int)player_id withCompletaitionHandler:(RMResult)handler
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/get_stuff", urlStr];
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+	NSString *postBody = [NSString stringWithFormat:@"type=%@&player_id=%d", type, player_id];
+	
+	//NSLog(@"%@?%@", api_path, postBody);
+	
+	NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+	
+	[self sendRequest:req withCompletionHandler:handler];
+}
+//---------------------------------------------------------------------------------------------------------------------------------
+#pragma mark - Places
+//---------------------------------------------------------------------------------------------------------------------------------
+- (void)getItemsForPlace:(NSString*)place withCompletaitionHandler:(RMResult)handler
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/services", urlStr];
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+	NSString *postBody = [NSString stringWithFormat:@"type=%@", place];
+	
+	//NSLog(@"%@?%@", api_path, postBody);
+	
+	NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+	
+	[self sendRequest:req withCompletionHandler:handler];
+}
+
+- (void)buyItem:(int)service_id withCompletaitionHandler:(RMResult)handler
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/use_service", urlStr];
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+	NSString *postBody = [NSString stringWithFormat:@"service_id=%d", service_id];
+	
+	//NSLog(@"%@?%@", api_path, postBody);
+	
+	NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+	
+	[self sendRequest:req withCompletionHandler:handler];
+}
+//---------------------------------------------------------------------------------------------------------------------------------
+
+//---------------------------------------------------------------------------------------------------------------------------------
+#pragma mark - PvP
+//---------------------------------------------------------------------------------------------------------------------------------
+- (void)getOpponentsWithCompletaitionHandler:(RMResult)handler
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/opponents", urlStr];
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+	NSString *postBody = [NSString stringWithFormat:@"limit=%d", 20];
+	
+	//NSLog(@"%@?%@", api_path, postBody);
+	
+	NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+	
+	[self sendRequest:req withCompletionHandler:handler];
+}
+//---------------------------------------------------------------------------------------------------------------------------------
+//set_player
+//challenge
+//---------------------------------------------------------------------------------------------------------------------------------
+- (void)getMySquadWithCompletaitionHandler:(RMResult)handler
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/my_squad", urlStr];
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+	//NSLog(@"%@", api_path);
+	
+	NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	
+	[self sendRequest:req withCompletionHandler:handler];
+}
+//---------------------------------------------------------------------------------------------------------------------------------
+
+//---------------------------------------------------------------------------------------------------------------------------------
+- (void)setPlayer:(int)player_id from:(BOOL)isReal to:(NSString*)position withCompletaitionHandler:(RMResult)handler
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/set_player", urlStr];
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+	
+	NSString *postBody = [NSString stringWithFormat:@"from=%@&new_player=%d&place=%@", (isReal)?@"real":@"game", player_id, position];
+	
+	//NSLog(@"%@?%@", api_path, postBody);
+	
+	NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+	
+	[self sendRequest:req withCompletionHandler:handler];
+
+}
+//---------------------------------------------------------------------------------------------------------------------------------
+
+//---------------------------------------------------------------------------------------------------------------------------------
+- (void)getGameContacts:(NSArray*)players_id position:(int)position offset:(int)offset orderBy:(int)order sortOrientation:(BOOL)isAsc withCompletaitionHandler:(RMResult)handler
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/game_contacts", urlStr];
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+	NSString *playersid = @"";
+	
+	for (NSString *id_s in players_id)
+		playersid = [playersid stringByAppendingFormat:@"players[]=%@&", id_s];
+	
+	NSString *orders[3] = 
+	{
+		@"l",
+		@"p",
+		@"n"
+	};
+	
+	NSString *postBody = [NSString stringWithFormat:@"%@position=%d&sort=%@&type=%@&offset=%d&limit=%d", playersid, position, orders[order], (isAsc)?@"a":@"d", offset, DEFAULT_PAGINATION_LIMIT];
+	
+	//NSLog(@"%@?%@", api_path, postBody);
+	
+	NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+	
+	[self sendRequest:req withCompletionHandler:handler];
+}
+//---------------------------------------------------------------------------------------------------------------------------------
+
+//---------------------------------------------------------------------------------------------------------------------------------
+- (void)getRealPlayers:(NSArray*)players_id position:(PFServiceOrder)position offset:(int)offset orderBy:(int)order sortOrientation:(BOOL)isAsc withCompletaitionHandler:(RMResult)handler
+{
+	NSString *api_path = [NSString stringWithFormat:@"%@/real_players", urlStr];
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+	NSString *playersid = @"";
+	
+	for (NSString *id_s in players_id)
+		playersid = [playersid stringByAppendingFormat:@"players[]=%@&", id_s];
+	
+	NSString *orders[3] = 
+	{
+		@"l",
+		@"p",
+		@"n"
+	};
+	
+	NSString *postBody = [NSString stringWithFormat:@"%@position=%d&sort=%@&type=%@&offset=%d&limit=%d", playersid, position, orders[order], (isAsc)?@"a":@"d", offset, DEFAULT_PAGINATION_LIMIT];
+	
+//	NSLog(@"%@?%@", api_path, postBody);
+	
+	NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+	
+	[self sendRequest:req withCompletionHandler:handler];
+}
+//---------------------------------------------------------------------------------------------------------------------------------
+
+//---------------------------------------------------------------------------------------------------------------------------------
+- (void)startChallengeWithPlayer:(int)player_id withCompletaitionHandler:(RMResult)handler
+{	
+	NSString *api_path = [NSString stringWithFormat:@"%@/challenge", urlStr];
+    api_path = [api_path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+	
+	
+	NSString *postBody = [NSString stringWithFormat:@"opponent=%d", player_id];
+	
+	//NSLog(@"%@?%@", api_path, postBody);
+	
+	NSMutableURLRequest *req = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:api_path]
+															cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                        timeoutInterval:30.0];
+    [req setHTTPMethod:@"POST"];
+	[req setHTTPBody:[postBody dataUsingEncoding:NSUTF8StringEncoding]];
+	
+	[self sendRequest:req withCompletionHandler:handler];
+}
+//---------------------------------------------------------------------------------------------------------------------------------
+@end
